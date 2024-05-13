@@ -95,3 +95,6 @@ class Command(ABC):
     @abstractmethod
     def execute(self, message, attachment_actions, activity):
         pass
+
+    def post_execute(self, message, attachment_actions):
+        pass

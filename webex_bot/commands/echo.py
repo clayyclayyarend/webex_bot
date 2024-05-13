@@ -73,6 +73,18 @@ class EchoCommand(Command):
                   ], actions=[submit])
 
         return response_from_adaptive_card(card)
+    
+    def post_execute(self, message, attachment_actions):
+       """
+        (optional function).
+        This allows post processing with the response from the Webex API after reply.
+
+        :param message: message with command already stripped
+        :param attachment_actions: attachment_actions object
+
+        :return: None
+        """
+       print(f"Post execute: message {attachment_actions.id} sent to room {attachment_actions.roomId}")
 
 
 class EchoCallback(Command):

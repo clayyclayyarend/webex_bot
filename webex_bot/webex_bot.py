@@ -297,7 +297,7 @@ class WebexBot(WebexWebsocketClient):
                                                                                                message=message_without_command,
                                                                                                teams_message=teams_message,
                                                                                                activity=activity)
-            self.do_reply(pre_card_load_reply, room_id, user_email, pre_card_load_reply_one_to_one, is_one_on_one_space, thread_parent_id)
+            new_messages = self.do_reply(pre_card_load_reply, room_id, user_email, pre_card_load_reply_one_to_one, is_one_on_one_space, thread_parent_id)
             reply = response
         else:
             log.debug(f"Going to run command: '{command}' with input: '{message_without_command}'")
@@ -305,15 +305,30 @@ class WebexBot(WebexWebsocketClient):
                                                                                    message=message_without_command,
                                                                                    teams_message=teams_message,
                                                                                    activity=activity)
-            self.do_reply(pre_execute_reply, room_id, user_email, pre_execute_reply_one_to_one, is_one_on_one_space, thread_parent_id)
+            new_messages = self.do_reply(pre_execute_reply, room_id, user_email, pre_execute_reply_one_to_one, is_one_on_one_space, thread_parent_id)
             reply, reply_one_to_one = self.run_command_and_handle_bot_exceptions(command=command,
                                                                                  message=message_without_command,
                                                                                  teams_message=teams_message,
                                                                                  activity=activity)
+        for new_message in new_messages:
+            self.run_post_execute(
+                command=command,
+                message=message_without_command,
+                teams_message=new_message
+            )
+
         log.info(f"Using thread id={thread_parent_id}")
-        return self.do_reply(reply, room_id, user_email, reply_one_to_one, is_one_on_one_space, thread_parent_id)
+        new_messages = self.do_reply(reply, room_id, user_email, reply_one_to_one, is_one_on_one_space, thread_parent_id)
+        for new_message in new_messages:
+            self.run_post_execute(
+                command=command,
+                message=message_without_command,
+                teams_message=new_message
+            )
 
     def do_reply(self, reply, room_id, user_email, reply_one_to_one, is_one_on_one_space, conv_target_id):
+        messages = list()
+
         # allow command handlers to craft their own Teams message
         if reply and isinstance(reply, Response):
             # If the Response lacks a roomId, set it to the incoming room
@@ -322,7 +337,7 @@ class WebexBot(WebexWebsocketClient):
             if not reply.parentId and conv_target_id and self.threads:
                 reply.parentId = conv_target_id
             reply = reply.as_dict()
-            self.teams.messages.create(**reply)
+            messages.append(self.teams.messages.create(**reply))
             reply = "ok"
         # Support returning a list of Responses
         elif reply and isinstance(reply, list):
@@ -333,24 +348,25 @@ class WebexBot(WebexWebsocketClient):
                         response.roomId = room_id
                     if not response.parentId and conv_target_id:
                         response.parentId = conv_target_id
-                    self.teams.messages.create(**response.as_dict())
+                    messages.append(self.teams.messages.create(**response.as_dict()))
                 else:
                     # Just a plain message
-                    self.send_message_to_room_or_person(user_email,
+                    messages.append(self.send_message_to_room_or_person(user_email,
                                                         room_id,
                                                         reply_one_to_one,
                                                         is_one_on_one_space,
                                                         response,
-                                                        conv_target_id)
+                                                        conv_target_id))
             reply = "ok"
         elif reply:
-            self.send_message_to_room_or_person(user_email,
+            messages.append(self.send_message_to_room_or_person(user_email,
                                                 room_id,
                                                 reply_one_to_one,
                                                 is_one_on_one_space,
                                                 reply,
-                                                conv_target_id)
-        return reply
+                                                conv_target_id))
+    
+        return messages
 
     def send_message_to_room_or_person(self,
                                        user_email,
@@ -359,29 +375,33 @@ class WebexBot(WebexWebsocketClient):
                                        is_one_on_one_space,
                                        reply,
                                        conv_target_id):
+        message = None
+
         default_move_to_one_to_one_heads_up = \
             quote_info(f"{user_email} I've messaged you 1-1. Please reply to me there.")
         if reply_one_to_one:
             if not is_one_on_one_space:
                 if self.threads:
-                    self.teams.messages.create(roomId=room_id,
+                    message = self.teams.messages.create(roomId=room_id,
                                                markdown=default_move_to_one_to_one_heads_up,
                                                parentId=conv_target_id)
                 else:
-                    self.teams.messages.create(roomId=room_id,
+                    message = self.teams.messages.create(roomId=room_id,
                                                markdown=default_move_to_one_to_one_heads_up)
             if self.threads:
-                self.teams.messages.create(toPersonEmail=user_email,
+                message = self.teams.messages.create(toPersonEmail=user_email,
                                            markdown=reply,
                                            parentId=conv_target_id)
             else:
-                self.teams.messages.create(toPersonEmail=user_email,
+                message = self.teams.messages.create(toPersonEmail=user_email,
                                            markdown=reply)
         else:
             if self.threads:
-                self.teams.messages.create(roomId=room_id, markdown=reply, parentId=conv_target_id)
+                message = self.teams.messages.create(roomId=room_id, markdown=reply, parentId=conv_target_id)
             else:
-                self.teams.messages.create(roomId=room_id, markdown=reply)
+                message = self.teams.messages.create(roomId=room_id, markdown=reply)
+        
+        return message
 
     def run_pre_card_load_reply(self, command, message, teams_message, activity):
         """
@@ -406,6 +426,16 @@ class WebexBot(WebexWebsocketClient):
     def run_command_and_handle_bot_exceptions(self, command, message, teams_message, activity):
         try:
             return command.card_callback(message, teams_message, activity), False
+        except BotException as e:
+            log.warn(f"BotException: {e.debug_message}")
+            return e.reply_message, e.reply_one_to_one
+    
+    def run_post_execute(self, command, message, teams_message):
+        """
+        This allows post processing with the response from the Webex API after reply.
+        """
+        try:
+            return command.post_execute(message, teams_message), False
         except BotException as e:
             log.warn(f"BotException: {e.debug_message}")
             return e.reply_message, e.reply_one_to_one
