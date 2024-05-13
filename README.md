@@ -167,6 +167,7 @@ class EchoCommand(Command):
             """
             print(f"Post execute: message {attachment_actions.id} sent to room {attachment_actions.roomId}")
 
+class EchoCommand(Command):
 
     def __init__(self):
         super().__init__(
